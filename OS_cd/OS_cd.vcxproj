@@ -133,6 +133,7 @@
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="command.cpp" />
+    <ClCompile Include="fs.cpp" />
     <ClCompile Include="main.cpp" />
     <ClCompile Include="user.cpp" />
   </ItemGroup>
