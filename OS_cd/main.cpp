@@ -1,14 +1,16 @@
-// main.cpp
 #include <iostream>
 #include <sstream>
 #include <vector>
-#include <windows.h>   // WinAPI 用于文件锁
-#include <filesystem>
+#include <windows.h>
+#include <shlwapi.h>       // 声明 PathRemoveFileSpecA
+#pragma comment(lib, "Shlwapi.lib")  // 链接 Shlwapi 库
+#include <filesystem>      // C++17 下使用 std::filesystem
 #include <functional>
 #include "fs.h"
 #include "user.h"
 #include "command.h"
 
+using namespace std::filesystem;
 using namespace std;
 
 // 虚拟磁盘，所有进程操作前后都要 load/save
@@ -22,6 +24,49 @@ static vector<string> cwdPath;
 
 // 当前用户实际的 Directory* 指针（resolveCwd 返回后缓存，供操作时使用）
 static Directory* currentDir = nullptr;
+
+//固定所有虚拟磁盘文件都放在 <exe所在目录> / data / vfs.dat
+static string g_vfsPath;
+
+// Windows 下获取当前可执行文件完整路径，然后去掉文件名只保留目录
+static string getExeFolder() {
+    char buffer[MAX_PATH];
+    DWORD len = GetModuleFileNameA(NULL, buffer, MAX_PATH);
+    if (len == 0 || len == MAX_PATH) {
+        // 获取失败，回退到当前工作目录
+        return filesystem::current_path().string();
+    }
+    // PathRemoveFileSpecA 会在 Windows 下移除最后的 "\<exe_name>"
+    PathRemoveFileSpecA(buffer);
+    return string(buffer);
+}
+
+// 初始化 g_vfsPath：<exeFolder>/data/vfs.dat，并确保 data 目录存在
+static void initVfsPath() {
+    namespace fs = filesystem;
+
+    // 1. 获取 exe 所在目录
+    fs::path exeFolder = getExeFolder();
+
+    // 2. 拼接出“<exeFolder>/data”
+    fs::path dataFolder = exeFolder / "data";
+
+    // 3. 如果 data 目录不存在，就创建它
+    if (!fs::exists(dataFolder)) {
+        try {
+            fs::create_directory(dataFolder);
+        }
+        catch (const fs::filesystem_error& e) {
+            cout << "[错误] 无法创建目录：" << dataFolder << "，异常：" << e.what() << "\n";
+        }
+    }
+
+    // 4. 最终拼成“<exeFolder>/data/vfs.dat”
+    fs::path vfsFile = dataFolder / "vfs.dat";
+    g_vfsPath = vfsFile.string();
+
+    cout << "[Info] 虚拟磁盘文件路径已固定为：" << g_vfsPath << "\n";
+}
 
 // 辅助函数: 根据 cwdPath 定位到实际的 Directory*
 Directory* resolveCwd(Directory* userRoot) {
@@ -85,7 +130,21 @@ void printPrompt() {
 int main() {
     cout << "欢迎使用简易文件系统！\n";
 
-    loadFromDisk(disk, "vfs.dat");
+    // 先固定 vfs.dat 路径，并确保 data 子目录存在
+    initVfsPath();
+
+    // 启动时如果 vfs.dat 存在且大小 > 0，就载入一次
+    try {
+        if (filesystem::exists(g_vfsPath) && filesystem::file_size(g_vfsPath) > 0) {
+            bool ok = loadFromDisk(disk, g_vfsPath);
+            if (!ok) {
+                cout << "[警告] 无法载入现有虚拟盘，将使用空虚拟盘。\n";
+            }
+        }
+    }
+    catch (...) {
+        // 忽略异常
+    }
 
     while (true) {
         // 登出后或初次启动时 currentUser 为空，强制做登录/注册/退出
