@@ -1,4 +1,5 @@
 #include <iostream>
+#include <fstream>
 #include <sstream>
 #include <vector>
 #include <windows.h>
@@ -43,29 +44,42 @@ static string getExeFolder() {
 
 // 初始化 g_vfsPath：<exeFolder>/data/vfs.dat，并确保 data 目录存在
 static void initVfsPath() {
-    namespace fs = filesystem;
+
 
     // 1. 获取 exe 所在目录
-    fs::path exeFolder = getExeFolder();
+    path exeFolder = getExeFolder();
 
     // 2. 拼接出“<exeFolder>/data”
-    fs::path dataFolder = exeFolder / "data";
+    path dataFolder = exeFolder / "data";
 
     // 3. 如果 data 目录不存在，就创建它
-    if (!fs::exists(dataFolder)) {
+    if (!exists(dataFolder)) {
         try {
-            fs::create_directory(dataFolder);
+            create_directory(dataFolder);
         }
-        catch (const fs::filesystem_error& e) {
+        catch (const filesystem_error& e) {
             cout << "[错误] 无法创建目录：" << dataFolder << "，异常：" << e.what() << "\n";
         }
     }
 
     // 4. 最终拼成“<exeFolder>/data/vfs.dat”
-    fs::path vfsFile = dataFolder / "vfs.dat";
+    path vfsFile = dataFolder / "vfs.dat";
     g_vfsPath = vfsFile.string();
 
     cout << "[Info] 虚拟磁盘文件路径已固定为：" << g_vfsPath << "\n";
+    // 如果 vfs.dat 不存在，就创建一个空文件
+    if (!exists(vfsFile)) {
+        // 用 ofstream 以二进制方式创建一个零字节文件
+        fstream ofs(g_vfsPath, ios::binary);
+        if (!ofs) {
+            cout << "[警告] 无法创建初始空白文件：" << g_vfsPath << "\n";
+        }
+        else {
+            // 立即关闭，保持它是一个大小为 0 的文件
+            ofs.close();
+            cout << "[Info] 已创建空白虚拟盘文件：" << g_vfsPath << "\n";
+        }
+    }
 }
 
 // 辅助函数: 根据 cwdPath 定位到实际的 Directory*
@@ -82,18 +96,30 @@ Directory* resolveCwd(Directory* userRoot) {
 }
 //文件锁 + load/save 封装
 // op 是一个函数，接收当前目录 Directory*，在锁定状态下对其进行操作
+// 加锁 → load → 操作 → save → 解锁
 void executeCommandSerialized(function<void(Directory*)> op) {
-    const string diskFile = "vfs.dat";
+    const string& diskFile = g_vfsPath;
 
-    // 1. 加锁并从磁盘加载最新状态
+    // 1. 锁定
     HANDLE hLock = lockDiskFile(diskFile);
     if (hLock == INVALID_HANDLE_VALUE) {
-        cout << "[错误] 无法锁定磁盘文件：" << diskFile << "\n";
+        cout << "[错误] 无法锁定磁盘文件: " << diskFile
+            << "，错误码=" << GetLastError() << "\n";
         return;
     }
-    loadFromDisk(disk, diskFile);
 
-    // 2. 定位到当前用户目录
+    // 2. 如果 vfs.dat 大小 > 0，就 load
+    try {
+        if (filesystem::exists(diskFile) && filesystem::file_size(diskFile) > 0) {
+            bool ok = loadFromDisk(disk, diskFile);
+            if (!ok) {
+                cout << "[警告] loadFromDisk 失败，将使用空盘。\n";
+            }
+        }
+    }
+    catch (...) {}
+
+    // 3. 定位到当前用户目录
     Directory* userRoot = nullptr;
     if (!currentUser.empty()) {
         userRoot = disk.userFileSystems[currentUser].root;
@@ -102,20 +128,19 @@ void executeCommandSerialized(function<void(Directory*)> op) {
     if (userRoot) {
         cwd = resolveCwd(userRoot);
     }
-    // 如果 cwdPath 已指向无效目录，则回退到根目录
     if (!cwd && userRoot) {
         cwd = userRoot;
         cwdPath.clear();
     }
-    currentDir = cwd; // 缓存下来，op 可直接使用
+    currentDir = cwd;
 
-    // 3. 执行用户传入的操作
+    // 4. 执行操作
     op(cwd);
 
-    // 4. 将修改保存到磁盘
+    // 5. 保存回磁盘
     savetoDisk(disk, diskFile);
 
-    // 5. 解锁
+    // 6. 解锁
     unlockDiskFile(hLock);
 }
 
