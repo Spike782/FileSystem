@@ -1,50 +1,141 @@
+// main.cpp
 #include <iostream>
 #include <sstream>
+#include <vector>
+#include <windows.h>   // WinAPI 用于文件锁
+#include <filesystem>
+#include <functional>
 #include "fs.h"
 #include "user.h"
 #include "command.h"
 
-VirtualDisk disk;  // 虚拟磁盘
-string currentUser;  // 当前登录用户
+using namespace std;
+
+// 虚拟磁盘，所有进程操作前后都要 load/save
+VirtualDisk disk;
+
+// 当前登录用户名
+string currentUser;
+
+// 记录当前用户的相对路径（从用户根目录开始）
+static vector<string> cwdPath;
+
+// 当前用户实际的 Directory* 指针（resolveCwd 返回后缓存，供操作时使用）
+static Directory* currentDir = nullptr;
+
+// 辅助函数: 根据 cwdPath 定位到实际的 Directory*
+Directory* resolveCwd(Directory* userRoot) {
+    Directory* dir = userRoot;
+    for (const auto& sub : cwdPath) {
+        auto it = dir->subDirs.find(sub);
+        if (it == dir->subDirs.end()) {
+            return nullptr;
+        }
+        dir = it->second;
+    }
+    return dir;
+}
+//文件锁 + load/save 封装
+// op 是一个函数，接收当前目录 Directory*，在锁定状态下对其进行操作
+void executeCommandSerialized(function<void(Directory*)> op) {
+    const string diskFile = "vfs.dat";
+
+    // 1. 加锁并从磁盘加载最新状态
+    HANDLE hLock = lockDiskFile(diskFile);
+    if (hLock == INVALID_HANDLE_VALUE) {
+        cout << "[错误] 无法锁定磁盘文件：" << diskFile << "\n";
+        return;
+    }
+    loadFromDisk(disk, diskFile);
+
+    // 2. 定位到当前用户目录
+    Directory* userRoot = nullptr;
+    if (!currentUser.empty()) {
+        userRoot = disk.userFileSystems[currentUser].root;
+    }
+    Directory* cwd = nullptr;
+    if (userRoot) {
+        cwd = resolveCwd(userRoot);
+    }
+    // 如果 cwdPath 已指向无效目录，则回退到根目录
+    if (!cwd && userRoot) {
+        cwd = userRoot;
+        cwdPath.clear();
+    }
+    currentDir = cwd; // 缓存下来，op 可直接使用
+
+    // 3. 执行用户传入的操作
+    op(cwd);
+
+    // 4. 将修改保存到磁盘
+    savetoDisk(disk, diskFile);
+
+    // 5. 解锁
+    unlockDiskFile(hLock);
+}
 
 void printPrompt() {
-    cout << currentUser << ":~$ ";
+    cout << currentUser << ":~";
+    for (const auto& p : cwdPath) {
+        cout << "/" << p;
+    }
+    cout << "$ ";
 }
 
 int main() {
     cout << "欢迎使用简易文件系统！\n";
+
     loadFromDisk(disk, "vfs.dat");
+
     while (true) {
-        currentUser = "";
+        // 登出后或初次启动时 currentUser 为空，强制做登录/注册/退出
+        currentUser.clear();
+        cwdPath.clear();
+        currentDir = nullptr;
+
         while (currentUser.empty()) {
             cout << "1. 注册\n2. 登录\n3. 退出\n请选择操作: ";
             int choice;
             cin >> choice;
-            cin.ignore(); // 忽略回车符
-
-            string username, password;
+            cin.ignore(); // 忽略回车
 
             if (choice == 1) {
+                // 注册：直接修改内存并持久化一次
+                string username, password;
                 cout << "请输入用户名: "; getline(cin, username);
                 cout << "请输入密码: "; getline(cin, password);
                 registeUser(disk, username, password);
+
+                // 注册后立即持久化到磁盘
+                executeCommandSerialized([](Directory*) {});
             }
             else if (choice == 2) {
+                // 登录：先从磁盘加载，保证获取最新密码状态
+                executeCommandSerialized([](Directory*) {});
+
+                string username, password;
                 cout << "请输入用户名: "; getline(cin, username);
                 cout << "请输入密码: "; getline(cin, password);
-                if (loginUser(disk, username, password, currentUser)) {
+
+                string loggedIn;
+                if (loginUser(disk, username, password, loggedIn)) {
+                    currentUser = loggedIn;
+                    // 登录成功，当前目录指向该用户根目录
                     currentDir = disk.userFileSystems[currentUser].root;
+                    cwdPath.clear();
                     break;
                 }
             }
             else {
+                // 退出程序
                 cout << "退出程序。\n";
-                savetoDisk(disk, "vfs.dat");
+                // 退出前再保存一次
+                executeCommandSerialized([](Directory*) {});
                 return 0;
             }
         }
 
-
+        //已登录用户命令循环 
         string line;
         while (true) {
             printPrompt();
@@ -54,6 +145,7 @@ int main() {
             iss >> cmd;
 
             if (cmd == "exit") {
+                // 退出当前用户会话
                 cout << "已退出登录。\n";
                 break;
             }
@@ -61,88 +153,160 @@ int main() {
             string arg1, arg2;
             iss >> arg1;
             iss >> ws;
-            getline(iss, arg2); // 支持写入带空格
+            getline(iss, arg2);
+
+
+            // 切换目录 (cd) 
+            if (cmd == "cd") {
+                if (arg1 == "..") {
+                    if (cwdPath.empty()) {
+                        cout << "[提示] 当前已在根目录，无法返回。\n";
+                    }
+                    else {
+                        cwdPath.pop_back();
+                        cout << "返回上一级目录。\n";
+                    }
+                }
+                else {
+                    // cd <目录名>：先加载最新磁盘状态，再检查子目录
+                    executeCommandSerialized([&](Directory* cwd) {
+                        if (!cwd) return;
+                        if (cwd->subDirs.find(arg1) == cwd->subDirs.end()) {
+                            cout << "[错误] 子目录不存在：" << arg1 << "\n";
+                        }
+                        else {
+                            cwdPath.push_back(arg1);
+                            cout << "[成功] 当前目录切换到：" << arg1 << "\n";
+                        }
+                        });
+                }
+                continue;
+            }
+            // 列出目录 (dir)
+            else if (cmd == "dir") {
+                executeCommandSerialized([&](Directory* cwd) {
+                    if (cwd) listDirectory(cwd);
+                    });
+                continue;
+            }
+            // 树形显示 (tree)
+            else if (cmd == "tree") {
+                executeCommandSerialized([&](Directory*) {
+                    showTree(disk);
+                    });
+                continue;
+            }
+
+            // 需要加锁+load+执行+save 的命令
+
             if (cmd == "mkdir") {
-                mkdir(currentDir, arg1);
+                executeCommandSerialized([&](Directory* cwd) {
+                    if (cwd) mkdir(cwd, arg1);
+                    });
             }
             else if (cmd == "rmdir") {
-                rmdir(currentDir, arg1);
-            }
-            else if (cmd == "cd") {
-                changeDirectory(currentDir, arg1);
-            }
-            else if (cmd == "dir") {
-                listDirectory(currentDir);
+                executeCommandSerialized([&](Directory* cwd) {
+                    if (cwd) rmdir(cwd, arg1);
+                    });
             }
             else if (cmd == "create") {
-                create(currentDir, arg1);
+                executeCommandSerialized([&](Directory* cwd) {
+                    if (cwd) create(cwd, arg1);
+                    });
             }
             else if (cmd == "delete") {
-                deleteFile(currentDir, arg1);
+                executeCommandSerialized([&](Directory* cwd) {
+                    if (cwd) deleteFile(cwd, arg1);
+                    });
             }
             else if (cmd == "open") {
-                openFile(currentDir, arg1);
+                executeCommandSerialized([&](Directory* cwd) {
+                    if (cwd) openFile(cwd, arg1);
+                    });
             }
             else if (cmd == "close") {
-                closeFile(currentDir, arg1);
+                executeCommandSerialized([&](Directory* cwd) {
+                    if (cwd) closeFile(cwd, arg1);
+                    });
             }
             else if (cmd == "read") {
-                readFile(currentDir, arg1);
+                executeCommandSerialized([&](Directory* cwd) {
+                    if (cwd) readFile(cwd, arg1);
+                    });
             }
             else if (cmd == "write") {
-                writeFile(currentDir, arg1, arg2);
+                executeCommandSerialized([&](Directory* cwd) {
+                    if (cwd) writeFile(cwd, arg1, arg2);
+                    });
             }
             else if (cmd == "move") {
-                moveFile(currentDir, arg1, arg2);
+                executeCommandSerialized([&](Directory* cwd) {
+                    if (cwd) moveFile(cwd, arg1, arg2);
+                    });
             }
             else if (cmd == "copy") {
-                copyFile(currentDir, arg1, arg2);
+                executeCommandSerialized([&](Directory* cwd) {
+                    if (cwd) copyFile(cwd, arg1, arg2);
+                    });
             }
             else if (cmd == "flock") {
-                if (arg2 == "lock") flockFile(currentDir, arg1, true);
-                else if (arg2 == "unlock") flockFile(currentDir, arg1, false);
-                else std::cout << "[错误] 格式应为：flock <文件名> lock/unlock\n";
+                executeCommandSerialized([&](Directory* cwd) {
+                    if (!cwd) return;
+                    if (arg2 == "lock") flockFile(cwd, arg1, true);
+                    else if (arg2 == "unlock") flockFile(cwd, arg1, false);
+                    else cout << "[错误] 格式应为：flock <文件名> lock/unlock\n";
+                    });
             }
             else if (cmd == "head") {
-                if (arg1.substr(0, 1) == "-") {
-                    int num = stoi(arg1.substr(1));
-                    iss >> arg2;
-                    headFile(currentDir, arg2, num);
-                }
-                else {
-                    std::cout << "[错误] 格式应为：head -[行数] 文件名\n";
-                }
+                executeCommandSerialized([&](Directory* cwd) {
+                    if (!cwd) return;
+                    if (!arg1.empty() && arg1[0] == '-') {
+                        int num = stoi(arg1.substr(1));
+                        headFile(cwd, arg2, num);
+                    }
+                    else {
+                        cout << "[错误] 格式应为：head -[行数] 文件名\n";
+                    }
+                    });
             }
             else if (cmd == "tail") {
-                if (arg1.substr(0, 1) == "-") {
-                    int num = stoi(arg1.substr(1));
-                    iss >> arg2;
-                    tailFile(currentDir, arg2, num);
-                }
-                else {
-                    std::cout << "[错误] 格式应为：tail -[行数] 文件名\n";
-                }
+                executeCommandSerialized([&](Directory* cwd) {
+                    if (!cwd) return;
+                    if (!arg1.empty() && arg1[0] == '-') {
+                        int num = stoi(arg1.substr(1));
+                        tailFile(cwd, arg2, num);
+                    }
+                    else {
+                        cout << "[错误] 格式应为：tail -[行数] 文件名\n";
+                    }
+                    });
             }
             else if (cmd == "lseek") {
-                int offset = stoi(arg2);
-                lseekFile(currentDir, arg1, offset);
-            }
-            else if (cmd == "tree") {
-                showTree(disk);
+                executeCommandSerialized([&](Directory* cwd) {
+                    if (!cwd) return;
+                    int offset = stoi(arg2);
+                    lseekFile(cwd, arg1, offset);
+                    });
             }
             else if (cmd == "import") {
-                if (!importFile(currentDir, arg1, arg2)) std::cout << "[错误] 导入失败\n";
-                else std::cout << "[成功] 文件已导入\n";
+                executeCommandSerialized([&](Directory* cwd) {
+                    if (!cwd) return;
+                    if (!importFile(cwd, arg1, arg2)) cout << "[错误] 导入失败\n";
+                    else cout << "[成功] 文件已导入\n";
+                    });
             }
             else if (cmd == "export") {
-                if (!exportFile(currentDir, arg1, arg2)) std::cout << "[错误] 导出失败\n";
-                else std::cout << "[成功] 文件已导出\n";
+                executeCommandSerialized([&](Directory* cwd) {
+                    if (!cwd) return;
+                    if (!exportFile(cwd, arg1, arg2)) cout << "[错误] 导出失败\n";
+                    else cout << "[成功] 文件已导出\n";
+                    });
             }
             else {
                 cout << "[提示] 不支持的命令。\n";
             }
         }
-
     }
+
     return 0;
 }
