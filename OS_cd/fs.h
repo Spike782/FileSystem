@@ -2,6 +2,9 @@
 #include <string>
 #include<map>
 #include<ctime>
+#include <Windows.h>
+#include <vector>
+#include <iostream>
 using namespace std;
 
 
@@ -47,4 +50,5 @@ void savetoDisk(const VirtualDisk& disk, const string& filename);
 bool loadFromDisk(VirtualDisk& disk, const string& filename);
 bool importFile(Directory* currentDir, const string& srcPath, const string& destName = "");
 bool exportFile(Directory* currentDir, const string& fileName, string destPath);
-
+HANDLE lockDiskFile(const string& filename);
+void unlockDiskFile(HANDLE hFile);

@@ -1,5 +1,7 @@
 #include"fs.h"
+#include <windows.h>
 #include<fstream>
+#include <string>
 #include<filesystem>
 #include<iostream>
 #include<iomanip>
@@ -163,4 +165,74 @@ bool exportFile(Directory* currentDir, const string& fileName, string destPath) 
 	out.write(i->second.content.data(), i->second.content.size());
 	out.close();
 	return true;
+}
+
+HANDLE lockDiskFile(const std::string& filename) {
+	// 1. 先用 CreateFile 以 GENERIC_READ|GENERIC_WRITE 方式打开文件，shareMode 设置为 0
+	//    表示不允许其他进程以任何方式访问（完全独占）。
+	HANDLE hFile = CreateFileA(
+		filename.c_str(),            // 要打开的文件名
+		GENERIC_READ | GENERIC_WRITE,// 需要读写权限
+		0,                           // dwShareMode = 0，表示“完全独占”，不允许其他进程打开
+		nullptr,                     // 默认安全属性
+		OPEN_ALWAYS,                 // 文件不存在就创建，存在就打开
+		FILE_ATTRIBUTE_NORMAL,       // 普通文件属性
+		nullptr                      // 不用模板句柄
+	);
+
+	if (hFile == INVALID_HANDLE_VALUE) {
+		// 打开（或创建）失败
+		std::cerr << "[锁定失败] 无法打开或创建文件: " << filename
+			<< "，错误码：" << GetLastError() << std::endl;
+		return INVALID_HANDLE_VALUE;
+	}
+
+	// 2. 调用 LockFileEx 对整个文件做排他锁
+	//    使用 OVERLAPPED 結構表示要锁定的文件区域
+	OVERLAPPED ovl = { 0 };
+	BOOL locked = LockFileEx(
+		hFile,
+		LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY, // 排他锁 + 如果锁不到立即失败
+		0,                   // 保留，一般写 0
+		MAXDWORD,            // 要锁定的高 32 位 (代表文件大小覆盖到文件尾)
+		MAXDWORD,            // 要锁定的低 32 位
+		&ovl
+	);
+
+	if (!locked) {
+		// 无法获取锁，立即失败
+		std::cerr << "[锁定失败] 无法对文件加锁: " << filename
+			<< "，错误码：" << GetLastError() << std::endl;
+		CloseHandle(hFile);
+		return INVALID_HANDLE_VALUE;
+	}
+
+	// 成功加锁，返回文件句柄
+	return hFile;
+}
+
+void unlockDiskFile(HANDLE hFile) {
+	if (hFile == INVALID_HANDLE_VALUE) {
+		// 如果传入的是无效句柄，什么也不做
+		return;
+	}
+
+	// 用同样的 OVERLAPPED 结构来解锁整个文件
+	OVERLAPPED ovl = { 0 };
+	BOOL unlocked = UnlockFileEx(
+		hFile,
+		0,          // 保留，一般写 0
+		MAXDWORD,   // 要解锁的高 32 位
+		MAXDWORD,   // 要解锁的低 32 位
+		&ovl
+	);
+
+	if (!unlocked) {
+		std::cerr << "[解锁失败] 无法对文件解锁，错误码："
+			<< GetLastError() << std::endl;
+		// 但不管成功与否，都要 CloseHandle
+	}
+
+	// 最后关闭句柄
+	CloseHandle(hFile);
 }
