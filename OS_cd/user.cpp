@@ -2,50 +2,48 @@
 #include <iostream>
 using namespace std;
 
+//用户注册
 bool registeUser(VirtualDisk& disk, const string& username, const string& password) {
     if (disk.users.count(username)) {
-        cout << "[错误] 用户名已存在！" << endl;
+        cout << "[错误] 用户已存在\n";
         return false;
     }
-
-    disk.users[username] = { password, 0, false };
-
+    disk.users[username] = { password, false, 0 };
     FileSystem fs;
     fs.root = new Directory;
     fs.root->name = "/";
     fs.root->parent = nullptr;
     disk.userFileSystems[username] = fs;
-
-    cout << "[成功] 用户注册成功！" << endl;
+    cout << "[成功] 注册成功\n";
     return true;
 }
 
-
+//用户登录
 bool loginUser(VirtualDisk& disk, const string& username, const string& password, string& currentUser) {
-    auto it = disk.users.find(username);
-    if (it == disk.users.end()) {
-        cout << "[错误] 用户不存在！" << endl;
+    auto i = disk.users.find(username);
+    if (i == disk.users.end()) {
+        cout << "[错误] 用户不存在\n"; 
         return false;
     }
-
-    User& user = it->second;
-    if (user.isLocked) {
-        cout << "[错误] 用户已被锁定！" <<endl;
+    User& u = i->second;
+    if (u.isLocked) {
+        cout << "[错误] 用户被锁定\n";
         return false;
     }
-
-    if (user.password == password) {
-        user.loginAttempts = 0;
+    if (u.password == password) {
+        u.loginAttempts = 0;
         currentUser = username;
-        cout << "[成功] 登录成功，欢迎 " << username << "！" << endl;
+        cout << "[成功] 登录成功\n";
         return true;
     }
     else {
-        user.loginAttempts++;
-        cout << "[错误] 密码错误！" << endl;
-        if (user.loginAttempts >= 3) {
-            user.isLocked = true;
-            cout << "[警告] 密码错误三次，用户已被锁定！" << endl;
+        ++u.loginAttempts;
+        if (u.loginAttempts >= 3) {
+            u.isLocked = true;
+            cout << "[警告] 三次错误，锁定用户\n";
+        }
+        else {
+            cout << "[错误] 密码错误\n";
         }
         return false;
     }
