@@ -1,4 +1,3 @@
-// user.h
 #pragma once
 
 #include "fs.h"

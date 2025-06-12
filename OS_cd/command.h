@@ -1,4 +1,3 @@
-// command.h
 #pragma once
 
 #include "fs.h"

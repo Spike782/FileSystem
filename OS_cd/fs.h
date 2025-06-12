@@ -1,12 +1,9 @@
-// fs.h
 #pragma once
-
 #include <string>
 #include <map>
 #include <vector>
 #include <cstdint>
 #include <ctime>
-#include <Windows.h>
 
 using namespace std;
 

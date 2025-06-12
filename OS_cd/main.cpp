@@ -1,4 +1,3 @@
-// main.cpp
 #include <iostream>
 #include <sstream>
 #include <vector>
@@ -10,24 +9,22 @@ using namespace std;
 
 VirtualDisk disk;
 string       currentUser;
-vector<string> cwdPath;
 Directory* currentDir = nullptr;
-const string VFS_FILE_PATH = "D:\\C++project\\OS_cd\\x64\\Debug\\vfs.dat";
-
-Directory* resolveCwd(Directory* root) {
-    Directory* dir = root;
-    for (auto& sub : cwdPath) {
-        auto it = dir->subDirs.find(sub);
-        if (it == dir->subDirs.end()) return nullptr;
-        dir = it->second;
-    }
-    return dir;
-}
-
+const string VFS_FILE_PATH = "D:\\Cprojects\\OS_cd\\x64\\Debug\\vfs.dat";
 
 void printPrompt() {
+    // 收集从当前目录到根的名字
+    vector<string> names;
+    for (Directory* p = currentDir; p && p->parent; p = p->parent) {
+        names.push_back(p->name);
+    }
+    reverse(names.begin(), names.end());
+
+    // 打印 user:~[/a/b/c]$
     cout << currentUser << ":~";
-    for (auto& p : cwdPath) cout << "/" << p;
+    for (auto& n : names) {
+        cout << "/" << n;
+    }
     cout << "$ ";
 }
 
@@ -37,7 +34,6 @@ int main() {
     while (true) {
         // 登出 / 重置状态
         currentUser.clear();
-        cwdPath.clear();
         currentDir = nullptr;
 
         // 注册 / 登录 / 退出 循环  
@@ -70,7 +66,6 @@ int main() {
                 if (loginUser(disk, u, p, li)) {
                     currentUser = li;
                     currentDir = disk.userFileSystems[currentUser].root;
-                    cwdPath.clear();
                 }
                 // 无论登录成功与否，都保存一次（以更新 loginAttempts/isLocked）
                 savetoDisk(disk, VFS_FILE_PATH);
@@ -83,6 +78,7 @@ int main() {
             }
             else {
                 cout << "[提示] 无效选项\n";
+                return 0;
             }
         }
 
@@ -101,12 +97,6 @@ int main() {
             if (!loadFromDisk(disk, VFS_FILE_PATH)) {
                 cout << "[提示] 磁盘加载失败，使用当前内存状态\n";
             }
-            // 确保 currentDir 跟随 cwdPath
-            currentDir = resolveCwd(disk.userFileSystems[currentUser].root);
-            if (!currentDir) {
-                currentDir = disk.userFileSystems[currentUser].root;
-                cwdPath.clear();
-            }
 
             istringstream iss(line);
             string cmd, arg1, arg2;
@@ -123,21 +113,24 @@ int main() {
 
             // —— 只读命令 —— 
             if (cmd == "cd") {
-                Directory* root = disk.userFileSystems[currentUser].root;
                 if (arg1 == "..") {
-                    if (!cwdPath.empty()) cwdPath.pop_back();
-                    else cout << "[提示] 已在根目录\n";
-                }
-                else {
-                    Directory* cwd = resolveCwd(root);
-                    if (cwd && cwd->subDirs.count(arg1)) {
-                        cwdPath.push_back(arg1);
+                    if (currentDir->parent) {
+                        currentDir = currentDir->parent;
                     }
                     else {
-                        cout << "[错误] 子目录不存在：" << arg1 << "\n";
+                        cout << "[提示] 已在根目录，无法返回。\n";
                     }
                 }
-                currentDir = resolveCwd(disk.userFileSystems[currentUser].root);
+                else {
+                    auto it = currentDir->subDirs.find(arg1);
+                    if (it == currentDir->subDirs.end()) {
+                        cout << "[错误] 子目录不存在：" << arg1 << "\n";
+                    }
+                    else {
+                        currentDir = it->second;
+                    }
+                }
+                continue;
             }
             else if (cmd == "dir") {
                 listDirectory(currentDir);
@@ -149,10 +142,12 @@ int main() {
                 readFile(currentDir, arg1);
             }
             else if (cmd == "head") {
+                //head -[行数] 文件名
                 int n = stoi(arg1.substr(1));
                 headFile(currentDir, arg2, n);
             }
             else if (cmd == "tail") {
+                //tail -[行数] 文件名
                 int n = stoi(arg1.substr(1));
                 tailFile(currentDir, arg2, n);
             }
@@ -182,8 +177,9 @@ int main() {
                 mutated = true;
             }
             else if (cmd == "write") {
-                writeFile(currentDir, arg1, arg2);
-                mutated = true;
+                    writeFile(currentDir, arg1,arg2);
+                    mutated = true;
+                
             }
             else if (cmd == "move") {
                 moveFile(currentDir, arg1, arg2);
@@ -204,6 +200,22 @@ int main() {
             else if (cmd == "export") {
                 exportFile(currentDir, arg1, arg2);
                 // exportFile 只是写宿主 FS，不影响 vfs.dat
+            }
+            else if (cmd == "lseek") {
+                // arg1 已经是文件名，arg2 是偏移量的字符串
+                if (arg2.empty()) {
+                    cout << "[错误] 格式: lseek <文件名> <偏移量>\n";
+                }
+                else {
+                    try {
+                        int offset = stoi(arg2);
+                        lseekFile(currentDir, arg1, offset);
+                        mutated = true;   // 如果你在写模式下要保存
+                    }
+                    catch (const exception&) {
+                        cout << "[错误] 无效的偏移量: " << arg2 << "\n";
+                    }
+                }
             }
             else {
                 cout << "[提示] 不支持的命令：" << cmd << "\n";
