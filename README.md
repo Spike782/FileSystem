@@ -12,7 +12,7 @@
 - **文件操作**：`create` / `delete` / `open` / `close` / `read` / `write`（插入写入）  
 - **文件指针**：`lseek` 支持移动读写指针  
 - **文件复制/移动**：`copy` / `move`，支持相对路径、自动创建中间目录  
-- **文件锁**：`flock <file> lock|unlock`，进程间互斥访问  
+- **文件锁**：`flock <file> lock|unlock`，读写锁 
 - **头尾**：`head -n <file>` → 前 n 行，`tail -n <file>` → 后 n 行  
 - **导入/导出**：`import <host-path> [dest-name]` / `export <file> <host-path>`  
 - **持久化**：每次操作前自动载入最新状态，修改后立即写回磁盘  
@@ -35,14 +35,12 @@
 ## 编译 & 运行
 
 1. **环境**：Windows + C++17  
-2. **依赖**：  
-   - WinAPI (`CreateFile`, `LockFileEx`, 等)  
+2. **依赖**：   
    - `<filesystem>` (C++17)  
 3. **编译示例**：  
    - **Visual Studio**：  
      - 新建空项目，将所有 `.cpp/.h` 加入  
-     - 在项目属性 → C/C++ → 语言 → C++17 标准  
-     - 链接 `Shlwapi.lib`（如果使用路径辅助）  
+     - 在项目属性 → C/C++ → 语言 → C++17 标准    
    - **g++** (MinGW)：
      ```sh
      g++ -std=c++17 -Wall main.cpp fs.cpp user.cpp command.cpp -o mini_vfs.exe
@@ -147,7 +145,7 @@ alice:~/docs$ exit
 * 不支持绝对路径与多级一次性创建（请分步 `cd`）。
 * 未实现权限管理，所有用户对自己空间无限制。
 * 存储文件不加密，密码明文存储。
-* 仅限 Windows 平台（依赖 WinAPI 文件锁）。
+* 仅限 Windows 平台。
 
 ---
 
