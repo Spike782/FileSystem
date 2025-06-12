@@ -219,7 +219,7 @@ int main() {
                 // exportFile 只是写宿主 FS，不影响 vfs.dat
             }
             else if (cmd == "lseek") {
-                // arg1 已经是文件名，arg2 是偏移量的字符串
+                // arg1 是文件名，arg2 是偏移量的字符串
                 if (arg2.empty()) {
                     cout << "[错误] 格式: lseek <文件名> <偏移量>\n";
                 }
@@ -227,7 +227,7 @@ int main() {
                     try {
                         int offset = stoi(arg2);
                         lseekFile(currentDir, arg1, offset);
-                        mutated = true;   // 如果你在写模式下要保存
+                        mutated = true;   
                     }
                     catch (const exception&) {
                         cout << "[错误] 无效的偏移量: " << arg2 << "\n";

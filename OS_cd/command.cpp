@@ -126,17 +126,11 @@ void writeFile(Directory* dir, const string& file, const string& d) {
     }
     // 从文件的当前读写指针位置开始写
     size_t pos = f.readPtr;
-    // 计算指针到文件末尾还有多少字节
-    size_t remaining = f.content.size() > pos ? f.content.size() - pos : 0;
-    // 先覆盖已有内容：覆盖长度不超过 remaining
-    size_t Overwrite = min(data.size(), remaining);
-    copy_n(data.begin(), Overwrite, f.content.begin() + pos);
-    // 如果 data 还有未覆盖的部分，则追加到文件末尾
-    if (data.size() > Overwrite) {
-        f.content.insert(f.content.end(),
-            data.begin() + Overwrite,
-            data.end());
+    if (pos > f.content.size()) {
+        pos = f.content.size();
     }
+    //插入新内容
+    f.content.insert(f.content.begin() + pos, data.begin(), data.end());
     // 更新指针到写入末尾
     f.readPtr = pos + data.size();
 
