@@ -10,20 +10,26 @@ using namespace std;
 VirtualDisk disk;
 string       currentUser;
 Directory* currentDir = nullptr;
+vector<string> cwdPath;
 const string VFS_FILE_PATH = "D:\\Cprojects\\OS_cd\\x64\\Debug\\vfs.dat";
 
-void printPrompt() {
-    // 收集从当前目录到根的名字
-    vector<string> names;
-    for (Directory* p = currentDir; p && p->parent; p = p->parent) {
-        names.push_back(p->name);
+// 根据 cwdPath 从用户根定位到当前目录节点
+Directory* resolveCwd(Directory* root) {
+    Directory* dir = root;
+    for (auto& sub : cwdPath) {
+        auto it = dir->subDirs.find(sub);
+        if (it == dir->subDirs.end())
+            return nullptr;
+        dir = it->second;
     }
-    reverse(names.begin(), names.end());
+    return dir;
+}
 
-    // 打印 user:~[/a/b/c]$
+// 打印提示符，显示 user:~[/a/b/c]$
+void printPrompt() {
     cout << currentUser << ":~";
-    for (auto& n : names) {
-        cout << "/" << n;
+    for (auto& seg : cwdPath) {
+        cout << "/" << seg;
     }
     cout << "$ ";
 }
@@ -34,6 +40,7 @@ int main() {
     while (true) {
         // 登出 / 重置状态
         currentUser.clear();
+        cwdPath.clear();
         currentDir = nullptr;
 
         // 注册 / 登录 / 退出 循环  
@@ -65,7 +72,6 @@ int main() {
                 cout << "密码: "; getline(cin, p);
                 if (loginUser(disk, u, p, li)) {
                     currentUser = li;
-                    currentDir = disk.userFileSystems[currentUser].root;
                 }
                 // 无论登录成功与否，都保存一次（以更新 loginAttempts/isLocked）
                 savetoDisk(disk, VFS_FILE_PATH);
@@ -97,6 +103,18 @@ int main() {
             if (!loadFromDisk(disk, VFS_FILE_PATH)) {
                 cout << "[提示] 磁盘加载失败，使用当前内存状态\n";
             }
+            // 根据 cwdPath 定位 currentDir
+            
+           Directory* root = disk.userFileSystems[currentUser].root;
+           Directory* cwd = resolveCwd(root);
+                if (!cwd) {
+                    // 路径失效则回到用户根
+                    cwdPath.clear();
+                    cwd = root;
+                }
+                currentDir = cwd;
+            
+
 
             istringstream iss(line);
             string cmd, arg1, arg2;
@@ -114,20 +132,19 @@ int main() {
             // —— 只读命令 —— 
             if (cmd == "cd") {
                 if (arg1 == "..") {
-                    if (currentDir->parent) {
-                        currentDir = currentDir->parent;
+                    if (!cwdPath.empty()) {
+                        cwdPath.pop_back();
                     }
                     else {
                         cout << "[提示] 已在根目录，无法返回。\n";
                     }
                 }
                 else {
-                    auto it = currentDir->subDirs.find(arg1);
-                    if (it == currentDir->subDirs.end()) {
-                        cout << "[错误] 子目录不存在：" << arg1 << "\n";
+                    if (currentDir->subDirs.count(arg1)) {
+                        cwdPath.push_back(arg1);
                     }
                     else {
-                        currentDir = it->second;
+                        cout << "[错误] 子目录不存在：" << arg1 << "\n";
                     }
                 }
                 continue;
